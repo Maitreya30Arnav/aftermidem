@@ -1,0 +1,941 @@
+WELDING SIGNAL SYNTHETIC EVALUATION DASHBOARD
+DETAILED PROJECT REPORT
+
+1. PROBLEM STATEMENT
+
+This project studies a welding current time-series and tries to answer one main question:
+
+"Can a synthetically generated welding current signal reproduce the important behavior of the
+real welding process closely enough to be useful for analysis, interpretation, and engineering
+comparison?"
+
+The dashboard is built around that goal. The real current signal is taken from a CSV file and
+a synthetic current signal is generated from it. The system then compares the two signals from
+multiple viewpoints:
+
+- waveform similarity in time domain
+- power and energy behavior
+- frequency-domain similarity
+- autocorrelation and temporal memory
+- welding heat transfer behavior
+- material response of mild steel
+- peak detection, peak power, and peak classification
+
+The dashboard is therefore not only a plotting tool. It is a multi-stage analysis pipeline that:
+
+1. reads welding current data
+2. generates a synthetic current trace
+3. computes engineering quantities from both signals
+4. compares real and synthetic behavior side by side
+5. interprets the welding consequences of the signal differences
+
+
+2. INPUT DATA EXPECTED BY THE PROJECT
+
+The project expects a CSV file with at least these columns:
+
+- Relative_ms
+- Current_A
+
+Optional voltage columns may also be present. The app checks for:
+
+- Voltage_V
+- Voltage
+- voltage_v
+- voltage
+- ArcVoltage_V
+- ArcVoltage
+- V
+
+If a voltage column is found, it is used in the heat and power calculations.
+If no voltage column is found, the dashboard uses a user-defined constant reference voltage.
+
+
+3. MAIN PROJECT FILES AND THEIR ROLES
+
+3.1 appli.py
+
+This is the main Streamlit dashboard application. It:
+
+- creates the UI
+- accepts user inputs
+- calls the synthetic generator
+- computes extra engineering analyses
+- builds comparison tables and plots
+- organizes the output into themed analysis sections
+
+3.2 generator.py
+
+This file contains the function:
+
+- generate_synthetic_and_metrics(df, start_row, end_row)
+
+Its job is to:
+
+- take the selected real signal window
+- construct a synthetic signal from the real data structure
+- compute similarity metrics such as RMS error, PSD difference, ACF correlation, and kurtosis error
+
+3.3 heat_utils.py
+
+This file contains the engineering heat and material logic. It provides:
+
+- welding heat calculation
+- heat loss distribution logic
+- mild steel material analysis
+- an auxiliary pulse-based analysis utility
+
+3.4 Supporting assets
+
+The project also uses:
+
+- iit_logo.png
+- mech_logo.png
+
+for branding and dashboard presentation.
+
+
+4. OVERALL PROGRAM FLOW
+
+The practical execution sequence of the dashboard is:
+
+1. The user uploads the welding CSV file.
+2. The user selects a row window using Start Row and End Row.
+3. The user sets welding parameters such as:
+   - efficiency
+   - welding speed
+   - weld area
+   - weld length
+   - default voltage
+4. The user sets peak-analysis parameters such as:
+   - resistance
+   - minimum peak height ratio
+   - minimum peak distance
+   - peak prominence ratio
+   - smoothing window
+   - peak analysis time window
+5. The dashboard generates a synthetic current signal from the selected real signal.
+6. The dashboard calculates electrical, statistical, frequency, heat, material, and peak-based analyses.
+7. All results are shown side by side for real and synthetic signals.
+
+
+5. SYNTHETIC GENERATOR LOGIC
+
+The synthetic signal generator is the core modeling part of the project. It does not create
+a signal from completely random noise. Instead, it tries to preserve the structure of the real
+welding process.
+
+5.1 Real signal extraction
+
+The generator first reads:
+
+- t_full = df["Relative_ms"].values
+- x_full = df["Current_A"].values.astype(float)
+
+Then the selected real window is:
+
+- x_real = x_full[start_row:end_row]
+- t_real = t_full[start_row:end_row]
+
+5.2 Threshold detection for state separation
+
+The real signal is converted into two states:
+
+- ON state: current above threshold
+- OFF state: current below threshold
+
+The threshold is computed from the current histogram:
+
+- a histogram of the current signal is created
+- peaks in the histogram are detected
+- if at least two histogram peaks exist, the threshold is the mean of the two lowest peak values
+- otherwise, the threshold falls back to the 45th percentile of the full current signal
+
+This gives:
+
+- thr
+- state_full = (x_full > thr).astype(int)
+
+This is a practical way to separate active welding current bursts from lower-current intervals.
+
+5.3 Block extraction
+
+The full signal is split into contiguous ON and OFF blocks.
+
+When the state changes from 0 to 1 or 1 to 0, a new block begins.
+
+Two block libraries are created:
+
+- on_blocks
+- off_blocks
+
+Only blocks longer than 5 samples are kept. If one category is empty, the whole signal is used
+as a fallback safety block.
+
+This means the synthetic generator learns structure from real signal fragments instead of
+inventing the waveform completely from scratch.
+
+5.4 AR-type correlated noise
+
+To avoid making the synthetic waveform look like a direct copy-paste of real blocks, the code
+adds correlated noise.
+
+First, lag-1 autocorrelation of the full real current is estimated:
+
+- acf_lag1 = corr(x[k], x[k+1])
+
+Then:
+
+- phi = clip(acf_lag1, 0.7, 0.98)
+
+This phi is used as an autoregressive memory parameter:
+
+- noise[i] = phi * noise[i-1] + N(0, sigma)
+
+where:
+
+- sigma = 0.03 * std(block)
+
+This makes the added noise smooth and temporally correlated instead of pointwise white noise.
+
+5.5 Alternating block synthesis
+
+The synthetic current is built by alternating between sampled ON and OFF blocks.
+
+Logic:
+
+- if current state is ON, randomly choose one block from on_blocks
+- if current state is OFF, randomly choose one block from off_blocks
+- add AR-type noise
+- append the block to the synthetic list
+- flip state and continue
+
+The output length is forced to match the chosen analysis window length:
+
+- N = end_row - start_row
+
+and the synthetic signal is truncated to exactly that size.
+
+5.6 Smooth transitions between consecutive blocks
+
+To avoid sharp discontinuities when one chosen block follows another, the code blends the
+beginning of the new block with the end of the already-created synthetic signal.
+
+For up to 10 samples:
+
+- block[k] = (1 - alpha) * syn[-1] + alpha * block[k]
+
+This creates a fade-in transition and reduces unrealistic jumps.
+
+5.7 Why this synthetic generator makes sense
+
+This generator is useful because it preserves:
+
+- real ON/OFF welding structure
+- realistic block lengths
+- realistic amplitude ranges
+- temporal smoothness
+- correlated current fluctuations
+
+It is therefore more physically meaningful than pure random noise and more flexible than directly
+copying the real signal.
+
+
+6. MATHEMATICS USED IN THE SYNTHETIC GENERATOR METRICS
+
+After the synthetic signal is created, generator.py computes similarity metrics.
+
+6.1 Instantaneous power in generator.py
+
+The generator uses a fixed voltage:
+
+- V = 25 V
+
+Then:
+
+- power_real = V * x_real
+- power_syn = V * syn
+
+Formula:
+
+- P = V * I
+
+This is used only for the generator-level basic power output. The more detailed heat section in
+the dashboard later uses the real voltage trace if available.
+
+6.2 RMS comparison
+
+Real and synthetic RMS currents are:
+
+- RMS_real = sqrt(mean(x_real^2))
+- RMS_syn  = sqrt(mean(syn^2))
+
+The RMS percentage error is:
+
+- RMS error (%) = |RMS_real - RMS_syn| / (RMS_real + 1e-8) * 100
+
+This measures amplitude mismatch in an energy-like sense.
+
+6.3 PSD comparison
+
+The generator estimates the power spectral density using Welch's method:
+
+- f_real, psd_real = welch(x_real, fs=fs, ...)
+- f_syn,  psd_syn  = welch(syn, fs=fs, ...)
+
+Sampling frequency is obtained from median time spacing:
+
+- dt = median(diff(t_real))
+- fs = 1000 / dt
+
+because time is in milliseconds.
+
+The PSD peak difference is:
+
+- PSD peak % difference = |max(psd_real) - max(psd_syn)| / (max(psd_real) + 1e-8) * 100
+
+This checks whether the dominant oscillation strength is preserved.
+
+6.4 Autocorrelation and ACF correlation
+
+An autocorrelation array is computed for lags 1 to 49:
+
+- ACF(lag) = corr(x[0:n-lag], x[lag:n])
+
+Then Pearson correlation is computed between the real and synthetic ACF vectors:
+
+- ACF correlation = corr(ACF_real, ACF_syn)
+
+This measures whether the temporal memory pattern of the synthetic signal resembles the real one.
+
+6.5 Kurtosis comparison
+
+Kurtosis is computed for both signals:
+
+- kurt_real = kurtosis(x_real)
+- kurt_syn  = kurtosis(syn)
+
+The project reports:
+
+- Kurtosis % error = |kurt_real - kurt_syn| / (|kurt_real| + 1e-8) * 100
+
+This checks whether the tail behavior and spikiness of the distributions are similar.
+
+
+7. DASHBOARD LOGIC IN appli.py
+
+The main dashboard takes the real and synthetic signals and turns them into a complete engineering
+comparison.
+
+The user controls:
+
+- row-based analysis window
+- heat model inputs
+- peak-analysis parameters
+- peak-analysis time range
+
+The dashboard then builds seven numbered themed sections:
+
+1. Current Waveform Analysis
+2. Power And Energy Delivery Analysis
+3. Quantitative Match Metrics
+4. Frequency And Temporal Pattern Analysis
+5. Heat Transfer And Welding Heat Analysis
+6. Material Response Analysis For Mild Steel
+7. Peak Detection And Peak-Type Classification
+
+
+8. ANALYSIS SECTION 1: CURRENT WAVEFORM ANALYSIS
+
+Purpose:
+
+- compare real and synthetic welding current directly in time domain
+
+What is shown:
+
+- real current vs time
+- synthetic current vs time
+- a textual interpretation of waveform similarity
+
+Main logic:
+
+- current correlation is computed
+- average currents are compared
+- the chart allows zooming and local inspection
+
+Interpretation value:
+
+This section helps determine whether the synthetic current follows the shape, envelope, and local
+pulse behavior of the real welding process.
+
+
+9. ANALYSIS SECTION 2: POWER AND ENERGY DELIVERY ANALYSIS
+
+Purpose:
+
+- compare how much electrical power and energy each signal would deliver
+
+9.1 Heat input source
+
+Unlike generator.py, the dashboard tries to use actual voltage data if available.
+
+If a voltage column exists:
+
+- it uses the same voltage trace for both real and synthetic current
+
+If not:
+
+- it uses the user-entered constant default voltage
+
+This is important because it isolates the effect of current realism when comparing heat behavior.
+
+9.2 Welding heat calculation function
+
+The main engineering function is:
+
+- calculate_welding_heat(...)
+
+The central formulas are:
+
+- P(t) = V(t) * I(t)
+- E_total = sum(P_i * dt)
+- Q_net = eta * E_total
+
+where:
+
+- eta is process efficiency
+- dt is sample interval in seconds
+
+The code computes:
+
+- power_w
+- cumulative_energy_j
+- effective_power_w
+- cumulative_heat_j
+- total_energy_j
+- effective_heat_j
+- total_loss_j
+
+9.3 Cumulative energy and heat
+
+The project integrates the sampled signal:
+
+- cumulative_energy_j = cumsum(power_w * dt)
+- cumulative_heat_j   = cumsum(effective_power_w * dt)
+
+This gives both raw electrical energy and useful delivered heat.
+
+9.4 Heat losses
+
+The total loss is:
+
+- total_loss_j = total_energy_j - effective_heat_j
+
+Losses are then distributed into fixed engineering categories:
+
+- conduction to surrounding plate = 35%
+- convection to surroundings      = 20%
+- radiation loss                  = 15%
+- spatter and fume loss           = 15%
+- torch/electrode/fixture loss    = 15%
+
+These values come from DEFAULT_HEAT_LOSS_FRACTIONS in heat_utils.py.
+
+9.5 Heat input per unit length
+
+Travel length is estimated from welding speed:
+
+- travel_length_mm = welding_speed_mm_per_s * total_duration_s
+
+Then:
+
+- heat_input_per_length_j_per_mm = effective_heat_j / travel_length_mm
+
+Instantaneous form:
+
+- instantaneous_heat_input_j_per_mm = effective_power_w / welding_speed_mm_per_s
+
+This links the electrical waveform to a standard welding engineering quantity.
+
+9.6 Heat density
+
+Given weld area and weld length:
+
+- volume_mm3 = weld_area_mm2 * weld_length_mm
+- heat_density = effective_heat_j / volume_mm3
+
+This measures how much useful heat is concentrated per unit weld volume.
+
+9.7 Charts and outputs in this group
+
+The dashboard shows:
+
+- Power vs Time
+- Cumulative Power vs Time
+- Average Power Comparison
+- Cumulative Energy vs Time
+- Sankey-style energy distribution charts
+- Cumulative Heat vs Time
+- Heat Input Per Unit Length vs Time
+- real and synthetic heat summary metrics
+
+
+10. ANALYSIS SECTION 3: QUANTITATIVE MATCH METRICS
+
+Purpose:
+
+- compress the real-vs-synthetic comparison into easy summary numbers
+
+Metrics reported:
+
+- RMS Error (%)
+- Current Correlation
+- ACF Correlation
+- Energy Gap (%)
+
+These values provide a fast engineering summary:
+
+- RMS error checks amplitude mismatch
+- current correlation checks waveform tracking
+- ACF correlation checks repeated temporal structure
+- energy gap checks whether the synthetic process delivers similar total energy
+
+
+11. ANALYSIS SECTION 4: FREQUENCY AND TEMPORAL PATTERN ANALYSIS
+
+Purpose:
+
+- verify whether the synthetic signal preserves the same rhythm and memory as the real signal
+
+11.1 Power Spectral Density
+
+PSD reveals how signal power is distributed across frequency.
+
+Why it matters:
+
+- welding signals often have switching frequencies
+- pulsed behavior appears as dominant spectral content
+- if synthetic PSD is similar, the synthetic signal likely preserves periodic behavior
+
+11.2 Autocorrelation Function
+
+The autocorrelation function shows how strongly the signal resembles a delayed version of itself.
+
+Why it matters:
+
+- repeated pulse timing
+- temporal pattern memory
+- consistency of on/off structure
+
+If the ACF curves match well, the synthetic waveform preserves the lag structure of the real
+current.
+
+
+12. ANALYSIS SECTION 5: MATERIAL RESPONSE ANALYSIS FOR HEAT TRANSFER
+
+Purpose:
+
+- convert electrical behavior into welding-relevant thermal behavior
+
+This is where the project stops being only a signal comparison and becomes a welding engineering
+interpretation tool.
+
+The system explains:
+
+- electrical energy
+- effective heat
+- heat losses
+- heat per unit length
+- heat density
+
+and shows how different current realism affects expected weld heating.
+
+The dashboard includes:
+
+- equations
+- a heat flow illustration
+- mechanism cards explaining each loss path
+- Sankey plots for energy distribution
+
+This makes the app usable not only for coding analysis but also for viva, presentation, and
+engineering explanation.
+
+
+13. ANALYSIS SECTION 6: MILD STEEL MATERIAL RESPONSE
+
+Purpose:
+
+- estimate whether the delivered heat is sufficient to thermally affect or melt mild steel
+
+Material constants in heat_utils.py:
+
+- density = 7850 kg/m^3
+- specific heat = 500 J/kg.K
+- melting temperature = 1500 C
+- initial temperature = 25 C
+- latent heat of fusion = 272000 J/kg
+
+13.1 Geometry and mass
+
+Given:
+
+- weld area in mm^2
+- weld length in mm
+
+The code computes:
+
+- volume_mm3 = area * length
+- volume_m3  = volume_mm3 * 1e-9
+- mass_kg    = density * volume_m3
+
+13.2 Heat required to melt mild steel
+
+Sensible heating:
+
+- Q_sensible = m * c * (T_m - T_0)
+
+Latent heating:
+
+- Q_latent = m * L_f
+
+Total required heat:
+
+- Q_required = Q_sensible + Q_latent
+
+13.3 Temperature rise
+
+If only sensible rise is considered:
+
+- dT = Q_net / (m * c)
+- T_final = T_0 + dT
+
+13.4 Heat sufficiency
+
+- Heat sufficiency (%) = Q_net / Q_required * 100
+
+13.5 Melting status
+
+If:
+
+- T_final >= T_m
+
+then:
+
+- melting_achieved = True
+
+13.6 Outputs shown in the dashboard
+
+For both real and synthetic cases, the dashboard reports:
+
+- mass
+- required heat
+- total losses
+- net heat after losses
+- final temperature
+- heat sufficiency
+- melting status
+
+Then it compares:
+
+- heat gap
+- temperature difference
+- heat sufficiency difference
+- required vs supplied heat
+
+This section is one of the strongest engineering parts of the project because it connects signal
+comparison to a real physical material outcome.
+
+
+14. ANALYSIS SECTION 7: PEAK DETECTION, PEAK POWER, AND PEAK CLASSIFICATION
+
+This is the newest and most explicit current-event analysis in the dashboard.
+
+Purpose:
+
+- detect local maxima from the current signal
+- filter out noise and spurious detections
+- compute peak power from peak current
+- classify each peak using current level relative to a reference
+- compare real and synthetic peak behavior side by side
+
+14.1 Separate peak-analysis time window
+
+The peak section can use a dedicated time range inside the main selected row window.
+
+This is important because:
+
+- the user may want peak analysis only on a specific welding interval
+- the rest of the dashboard can still use the larger selected window
+
+14.2 Signal smoothing
+
+Before peak search, the current signal is smoothed using a moving average window:
+
+- smoothing_window_samples
+
+This reduces sensitivity to small sample-level fluctuations.
+
+14.3 Local maxima detection
+
+The function:
+
+- find_local_maxima(signal)
+
+detects local maxima and also handles flat plateaus by choosing the center of the flat peak.
+
+14.4 Peak height threshold
+
+The signal maximum is:
+
+- signal_max_current_a = max(current)
+
+The minimum allowed peak height is:
+
+- min_height_a = min_height_ratio * signal_max_current_a
+
+Any candidate below this threshold is rejected.
+
+14.5 Peak prominence
+
+The function:
+
+- estimate_peak_prominence(signal, peak_index)
+
+estimates how much a peak rises above its local contour level.
+
+The threshold is:
+
+- prominence_threshold_a = prominence_ratio * signal_max_current_a
+
+Any peak below the prominence threshold is rejected.
+
+14.6 Minimum peak distance
+
+The code also enforces a minimum distance between accepted peaks.
+
+If the user does not give a distance, the code uses:
+
+- auto_min_distance_ms = max(3 * sample_spacing_ms, duration_ms / 80)
+
+Then a sample-based minimum spacing is derived.
+
+If several candidates are too close together, the code keeps the stronger one first.
+
+14.7 Reference current
+
+After filtering, the accepted peaks define:
+
+- I0 = maximum accepted peak current
+
+14.8 Peak power formula
+
+The user enters resistance R in ohms, and for each detected peak:
+
+- P_peak = I_peak^2 * R
+
+This is different from the heat section, which uses P = V * I over the full signal.
+
+14.9 Peak classification logic
+
+The project classifies each peak using:
+
+- current_ratio_i0 = I_peak / I0
+
+Rules used:
+
+- Normal:   0.90 <= I_peak / I0 <= 1.00
+- Effective: 0.65 <= I_peak / I0 < 0.90
+- Arcing:    0.55 <= I_peak / I0 < 0.65
+- Short:     I_peak / I0 < 0.55
+
+14.10 Peak outputs shown
+
+For both real and synthetic signals, the dashboard shows:
+
+- current trace with peak markers
+- peak table with:
+  - peak id
+  - peak index
+  - time
+  - peak current
+  - peak power
+  - current ratio to I0
+  - prominence
+  - category
+
+It also shows comparison outputs:
+
+- peak count
+- average peak power
+- dominant peak type
+- category shares
+- category-wise average peak power
+- peak category comparison table
+
+This section is especially useful for pulse-type interpretation in welding.
+
+
+15. AUXILIARY PULSE-LEVEL ANALYSIS IN heat_utils.py
+
+The project also contains a more detailed pulse-run analysis function:
+
+- analyze_welding_pulses(...)
+
+This logic is separate from the current end-of-dashboard peak classification block.
+
+Its approach is:
+
+1. determine a reference current I0
+2. find low-current charging-point regions
+3. define a pulse as the waveform between consecutive charging points
+4. compute pulse-level electrical energy and useful heat
+5. estimate pulse-level temperature rise
+6. classify each pulse using:
+   - Normal
+   - Effective
+   - Arcing
+   - Shorts
+
+Important formulas used in that utility:
+
+- electrical_energy_j = sum(P_i * dt)
+- useful_heat_j = eta * electrical_energy_j
+- pulse_length = welding_speed * pulse_duration
+- pulse_volume = weld_area * pulse_length
+- pulse_mass = density * pulse_volume
+- pulse_temperature_rise = useful_heat / (mass * c)
+
+This function is a useful deeper engineering routine, even if the final UI is currently centered
+on the peak-based analysis section.
+
+
+16. USER INTERFACE AND REPORTING LOGIC
+
+The dashboard is intentionally designed to read like an analysis report rather than a raw control
+panel.
+
+Key design logic:
+
+- each major section has a numbered themed banner
+- every chart is accompanied by a short written interpretation
+- real and synthetic signals are almost always shown side by side
+- the app is organized for both technical use and presentation use
+
+This is a significant project strength because it combines:
+
+- data processing
+- signal analysis
+- engineering equations
+- physical interpretation
+- visual reporting
+
+
+17. IMPORTANT ENGINEERING ASSUMPTIONS
+
+The project makes several assumptions that should be clearly stated in any academic or technical
+presentation:
+
+1. Synthetic generation is data-driven, not physics-first.
+   The synthetic signal is based on learned ON/OFF current blocks from the real signal.
+
+2. In generator.py, power is initially estimated using a fixed 25 V.
+   Later, the main dashboard may use real voltage if available.
+
+3. Useful heat is modeled by a constant efficiency:
+   - Q_net = eta * E_total
+
+4. Heat loss fractions are fixed percentages, not dynamically learned from the process.
+
+5. Mild steel is modeled using constant thermophysical properties.
+
+6. Peak classification is relative to a reference current I0, not an external welding standard
+   current database.
+
+7. Peak power uses:
+   - P_peak = I_peak^2 * R
+   with user-defined resistance R.
+
+These assumptions are reasonable for a practical engineering dashboard, but they should be stated
+whenever results are interpreted as approximate rather than exact physical truth.
+
+
+18. STRENGTHS OF THE PROJECT
+
+The project has several strong points:
+
+- It creates a synthetic welding current from the real signal structure instead of random noise.
+- It compares real and synthetic signals in both time and frequency domains.
+- It converts electrical behavior into welding heat and material consequences.
+- It includes both engineering formulas and visual explanation.
+- It supports configurable peak analysis on a selected time interval.
+- It is presentation-friendly because each section includes interpretation text.
+
+
+19. LIMITATIONS AND FUTURE IMPROVEMENTS
+
+The current system is useful, but there are clear future directions:
+
+1. Synthetic generator improvement
+   The generator could be upgraded to use:
+   - state-duration modeling
+   - hidden Markov models
+   - GAN/VAE/time-series neural networks
+   - condition-based generation by welding mode
+
+2. Heat model realism
+   Loss fractions could be made dynamic based on:
+   - current level
+   - travel speed
+   - plate thickness
+   - shielding gas and process conditions
+
+3. Material modeling
+   More realistic thermal modeling could include:
+   - temperature-dependent properties
+   - conduction into surrounding material over time
+   - phase-change dynamics beyond simple threshold logic
+
+4. Peak and pulse logic
+   The project could merge:
+   - peak-based classification
+   - pulse-run analysis
+   into one unified current event framework
+
+5. Validation
+   The synthetic generator could be validated against:
+   - more datasets
+   - different welding procedures
+   - process labels
+   - known arc-state annotations
+
+
+20. FINAL PROJECT SUMMARY
+
+In summary, this project is a welding signal analysis and comparison system that:
+
+- accepts real welding current data
+- generates a synthetic welding current signal
+- compares the two signals statistically and physically
+- translates signal behavior into power, energy, heat, and material response
+- performs peak-based event detection and classification
+- presents the results in a structured dashboard
+
+From a coding point of view, the project combines:
+
+- signal processing
+- stochastic synthetic generation
+- spectral and correlation analysis
+- engineering heat calculations
+- material thermodynamics
+- peak classification
+- interactive dashboard design
+
+From an engineering point of view, the project answers:
+
+- how similar the synthetic current is to the real current
+- whether their heat and energy behavior match
+- whether they would have similar welding consequences
+- how the signals differ in peak behavior and pulse strength
+
+Therefore, this is not only a synthetic signal generator. It is a full welding signal evaluation
+framework with both mathematical and engineering interpretation layers.
